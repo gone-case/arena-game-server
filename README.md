@@ -66,7 +66,7 @@ Sanitizer build: `cmake -S . -B build-asan -DENABLE_SANITIZERS=ON` (ASan + UBSan
 ### Configuration
 | Variable | Service | Default |
 |---|---|---|
-| `PORT`, `MATCH_SIZE` | matchmaker | 8080, 2 |
+| `PORT`, `MATCH_SIZE`, `HTTP_THREADS` | matchmaker | 8080, 2, 64 |
 | `GS_ID`, `GS_HOST`, `GS_PORT`, `GS_CAPACITY` | gameserver | gs-1, 127.0.0.1, 7777, 50 |
 | `MM_HOST`, `MM_PORT`, `HEARTBEAT_MS` | gameserver | 127.0.0.1, 8080, 500 |
 
@@ -78,6 +78,16 @@ Sanitizer build: `cmake -S . -B build-asan -DENABLE_SANITIZERS=ON` (ASan + UBSan
 | DELETE | `/v1/tickets/{id}` | cancel |
 | POST | `/v1/servers/heartbeat` | `{"id","host","port","capacity","active"}` → `{"assignments":[...]}` |
 | GET | `/metrics`, `/healthz` | Prometheus text format, liveness |
+
+## Load-test findings
+- **HTTP worker starvation**: with the library default of 8 workers, every keep-alive bot
+  connection held a thread and most of 200 bots could not even join the queue. Fixed with a
+  configurable pool (`HTTP_THREADS`) and a short keep-alive timeout.
+- **Listen backlog**: cpp-httplib's default `listen()` backlog of 5 dropped connections when
+  hundreds of players connected at once. Raised to 1024; the bot also retries with exponential
+  backoff + jitter.
+- **Capacity backpressure**: when every game server is full, matches stay queued rather than
+  being over-assigned; adding a server (or raising `GS_CAPACITY`) drains the queue.
 
 ## Testing
 - **Unit tests (GoogleTest, 19 tests)**: queue matching, window widening, fairness, cancel,

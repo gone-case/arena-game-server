@@ -1,4 +1,6 @@
 // Matchmaker service: REST API for players and game servers + background matching loop.
+// Default backlog of 5 drops connections when hundreds of players connect at once
+#define CPPHTTPLIB_LISTEN_BACKLOG 1024
 #include <httplib.h>
 
 #include <atomic>
@@ -120,6 +122,11 @@ int main() {
   cfg.match_size = env_int("MATCH_SIZE", 2);
   Matchmaker mm(cfg);
   httplib::Server svr;
+  // Each keep-alive client pins a worker thread, so size the pool for many concurrent players
+  // and recycle idle connections quickly.
+  const int workers = env_int("HTTP_THREADS", 64);
+  svr.new_task_queue = [workers] { return new httplib::ThreadPool(static_cast<size_t>(workers)); };
+  svr.set_keep_alive_timeout(1);
 
   auto bad = [](httplib::Response& res, const std::string& msg) {
     res.status = 400;

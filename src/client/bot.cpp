@@ -24,7 +24,7 @@ using namespace std::chrono;
 
 struct Stats {
   std::mutex mu;
-  int matched = 0, failed = 0;
+  int matched = 0, failed = 0, queue_fail = 0, match_timeout = 0, udp_fail = 0;
   double queue_ms = 0, rtt_ms = 0, correction = 0;
   long rtt_samples = 0, snapshots = 0;
 };
@@ -54,8 +54,15 @@ static void run_bot(uint32_t player, const std::string& mm_host, int mm_port, in
 
   // ---- 1. Matchmaking ----
   auto t0 = steady_clock::now();
-  auto q = cli.Post("/v1/queue", json{{"player_id", player}, {"skill", skill}}.dump(), "application/json");
-  if (!q || q->status != 200) { std::lock_guard lk(st.mu); ++st.failed; return; }
+  cli.set_connection_timeout(2);
+  cli.set_read_timeout(5);
+  httplib::Result q;
+  // Retry transient errors with exponential backoff + jitter so bots don't retry in lockstep
+  for (int attempt = 0; attempt < 5 && !(q && q->status == 200); ++attempt) {
+    if (attempt) std::this_thread::sleep_for(milliseconds((100 << attempt) + rng() % 100));
+    q = cli.Post("/v1/queue", json{{"player_id", player}, {"skill", skill}}.dump(), "application/json");
+  }
+  if (!q || q->status != 200) { std::lock_guard lk(st.mu); ++st.failed; ++st.queue_fail; return; }
   auto ticket = json::parse(q->body)["ticket_id"].get<uint64_t>();
 
   json m;
@@ -64,13 +71,13 @@ static void run_bot(uint32_t player, const std::string& mm_host, int mm_port, in
     if (r && r->status == 200 && (m = json::parse(r->body))["status"] == "matched") break;
     std::this_thread::sleep_for(milliseconds(200));
   }
-  if (m.value("status", "") != "matched") { std::lock_guard lk(st.mu); ++st.failed; return; }
+  if (m.value("status", "") != "matched") { std::lock_guard lk(st.mu); ++st.failed; ++st.match_timeout; return; }
   double queue_ms = duration<double, std::milli>(steady_clock::now() - t0).count();
 
   // ---- 2. Connect to assigned game server ----
   uint32_t match = m["match_id"];
   int sock = udp_connect(m["host"], m["port"]);
-  if (sock < 0) { std::lock_guard lk(st.mu); ++st.failed; return; }
+  if (sock < 0) { std::lock_guard lk(st.mu); ++st.failed; ++st.udp_fail; return; }
   std::uniform_int_distribution pct(0, 99);
   auto send = [&](const std::vector<uint8_t>& p) {
     if (pct(rng) >= loss) ::send(sock, p.data(), p.size(), 0);
@@ -169,7 +176,8 @@ int main(int argc, char** argv) {
     threads.emplace_back(run_bot, start_id + i, host, port, secs, loss, std::ref(st));
   for (auto& t : threads) t.join();
 
-  std::cout << "bots matched:        " << st.matched << "/" << bots << " (failed " << st.failed << ")\n";
+  std::cout << "bots matched:        " << st.matched << "/" << bots << " (failed " << st.failed << ": queue " << st.queue_fail << ", match timeout "
+            << st.match_timeout << ", udp " << st.udp_fail << ")\n";
   if (st.matched) {
     std::cout << "avg queue time:      " << st.queue_ms / st.matched << " ms\n"
               << "avg RTT:             " << (st.rtt_samples ? st.rtt_ms / st.rtt_samples : 0) << " ms\n"
