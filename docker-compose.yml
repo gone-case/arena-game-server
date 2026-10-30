@@ -1,0 +1,24 @@
+services:
+  matchmaker:
+    build: .
+    command: matchmaker
+    environment: { PORT: "8080", MATCH_SIZE: "2" }
+    ports: ["8080:8080"]
+
+  gs1:
+    build: .
+    command: gameserver
+    environment: { GS_ID: gs-1, GS_HOST: gs1, GS_PORT: "7777", GS_CAPACITY: "50", MM_HOST: matchmaker }
+    depends_on: [matchmaker]
+
+  gs2:
+    build: .
+    command: gameserver
+    environment: { GS_ID: gs-2, GS_HOST: gs2, GS_PORT: "7777", GS_CAPACITY: "50", MM_HOST: matchmaker }
+    depends_on: [matchmaker]
+
+  bots:
+    build: .
+    command: ["bot", "--mm", "matchmaker:8080", "--bots", "40", "--seconds", "20", "--loss", "5"]
+    depends_on: [gs1, gs2]
+    profiles: ["load"]   # run with: docker compose --profile load up bots

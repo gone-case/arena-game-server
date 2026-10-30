@@ -1,0 +1,31 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        sanitizers: [OFF, ON]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DENABLE_SANITIZERS=${{ matrix.sanitizers }}
+          cmake --build build -j
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+      - name: End-to-end smoke test
+        run: |
+          ./build/matchmaker & sleep 1
+          GS_ID=gs-1 GS_PORT=7777 ./build/gameserver &
+          GS_ID=gs-2 GS_PORT=7778 ./build/gameserver &
+          sleep 2
+          ./build/bot --bots 10 --seconds 5 --loss 5
+
+  docker:
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t arena-platform .
